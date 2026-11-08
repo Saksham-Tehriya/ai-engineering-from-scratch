@@ -242,7 +242,8 @@
     if (!_isOpen) return;
     var input = _inputEl();
     var query = input ? input.value.trim() : '';
-    renderResults(query ? search(query) : []);
+    renderResults(query ? search(query) : [], true);
+    searchPages(query);
   }
 
   // ── Scoring ──────────────────────────────────────────────────────────
@@ -465,6 +466,7 @@
 
     createPaletteDOM();
     document.body.setAttribute(BODY_ATTR, '');
+    try { document.dispatchEvent(new CustomEvent('aifs:overlayopen', { detail: { source: 'palette' } })); } catch (_) {}
 
     var pal = _palEl();
     if (pal) {
@@ -480,7 +482,20 @@
       input.focus();
       var q = input.value.trim();
       renderResults(q ? search(q) : []);
+      searchPages(q);
     }
+  }
+
+  function _focusable(el) {
+    return !!(el && typeof el.focus === 'function' && el.isConnected && el.getClientRects && el.getClientRects().length);
+  }
+
+  function _visibleTrigger() {
+    var candidates = document.querySelectorAll('[data-cmd-palette], .header-menu-toggle');
+    for (var i = 0; i < candidates.length; i++) {
+      if (_focusable(candidates[i])) return candidates[i];
+    }
+    return null;
   }
 
   function close() {
@@ -501,17 +516,18 @@
 
     // Return focus to wherever the user was before
     try {
-      if (_prevFocus && typeof _prevFocus.focus === 'function') {
-        _prevFocus.focus();
-      }
+      var target = _focusable(_prevFocus) ? _prevFocus : _visibleTrigger();
+      if (target) target.focus();
     } catch (_) { /* element may have been removed from DOM */ }
     _prevFocus = null;
   }
 
   // ── Render results ───────────────────────────────────────────────────
-  function renderResults(results) {
+  function renderResults(results, keepActive) {
     var list = _listEl();
     if (!list) return;
+    var previous = keepActive && _activeIdx >= 0 ? list.querySelectorAll('.cp-item')[_activeIdx] : null;
+    var previousHref = previous ? previous.getAttribute('data-href') : '';
 
     var query = (_inputEl() ? _inputEl().value : '').trim();
 
@@ -567,7 +583,7 @@
         dest = r.lessonPath
           ? 'lesson?path=' + encodeURIComponent(r.lessonPath)
           : r.url;
-        chip = 'Phase ' + String(r.phaseId).padStart(2, '0');
+        chip = lessonChip(r);
       } else if (r.kind === 'certification-lesson') {
         dest = 'lesson?path=' + encodeURIComponent(r.lessonPath);
         chip = 'Certification';
@@ -608,8 +624,7 @@
           metaParts.push(((hours ? hours + 'h' : '') + (minutes ? ' ' + minutes + 'm' : '')).trim());
         }
       } else if (r.kind === 'lesson' || r.kind === 'certification-lesson') {
-        if (r.type && r.type !== '—') metaParts.push(r.type);
-        if (r.lang && r.lang !== '—') metaParts.push(r.lang);
+        metaParts = lessonMeta(r);
       } else if (r.kind === 'certification-track') {
         if (r.level) metaParts.push(r.level);
       } else if (r.kind === 'artifact') {
@@ -647,6 +662,14 @@
       items[j].addEventListener('click',     _onItemClick);
       items[j].addEventListener('mousemove', _onItemMouseMove);
     }
+    if (!previousHref) return;
+    for (var k = 0; k < items.length; k++) {
+      if (items[k].getAttribute('data-href') === previousHref) {
+        _activeIdx = k;
+        _updateActive(items);
+        return;
+      }
+    }
   }
 
   function loadPagefind() {
@@ -656,7 +679,10 @@
           pagefind.init();
           return pagefind;
         });
-      }).catch(function () { return null; });
+      }).catch(function () {
+        _pagefind = null;
+        return null;
+      });
     }
     return _pagefind;
   }
@@ -666,37 +692,103 @@
     return new DOMParser().parseFromString(String(html || ''), 'text/html').body.textContent;
   }
 
+  function hasPhaseId(r) {
+    return r.phaseId !== undefined && r.phaseId !== null;
+  }
+
+  function lessonChip(r) {
+    return hasPhaseId(r) ? 'Phase ' + String(r.phaseId).padStart(2, '0') : 'Lesson';
+  }
+
+  function lessonMeta(r) {
+    var parts = [];
+    if (r.type && r.type !== '—') parts.push(r.type);
+    if (r.lang && r.lang !== '—') parts.push(r.lang);
+    if (!hasPhaseId(r) && r.phaseName) parts.push(r.phaseName);
+    return parts;
+  }
+
+  function lessonPathFromUrl(url) {
+    var match = /^\/?lesson(?:\.html)?\?(?:[^#]*&)?path=([^&#]+)/.exec(String(url || ''));
+    if (!match) return '';
+    try {
+      var value = decodeURIComponent(match[1]);
+      return /^phases\/[^/?#]+\/[^/?#]+$/.test(value) ? value : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   function pageItem(data) {
     var filters = data.filters || {};
-    return {
+    var pageType = filters.type && filters.type[0] ? filters.type[0] : 'Page';
+    var item = {
       kind: 'page',
       name: (data.meta && data.meta.title) || data.url,
       summary: excerptText(data.excerpt),
       url: data.url,
-      pageType: filters.type && filters.type[0] ? filters.type[0] : 'Page'
+      pageType: pageType
     };
+    var lessonPath = pageType === 'Lesson' ? lessonPathFromUrl(data.url) : '';
+    if (lessonPath) {
+      item.kind = 'lesson';
+      item.lessonPath = lessonPath;
+      item.phaseName = filters.phase && filters.phase[0] ? filters.phase[0] : '';
+    }
+    return item;
   }
 
-  function mergePages(local, pages) {
-    var names = {};
-    local.forEach(function (item) { names[String(item.name).toLowerCase()] = true; });
-    return local.concat(pages.map(pageItem).filter(function (item) {
-      return !names[String(item.name).toLowerCase()];
-    }));
+  function mergePages(local, pages, limit) {
+    var seen = {};
+    function mark(item) {
+      if (item.kind === 'lesson' && item.lessonPath) seen['path:' + item.lessonPath] = true;
+      else seen['name:' + String(item.name).toLowerCase()] = true;
+      if (item.url) seen['url:' + item.url] = true;
+    }
+    function isSeen(item) {
+      if (item.kind === 'lesson' && item.lessonPath) return !!seen['path:' + item.lessonPath];
+      return !!(seen['url:' + item.url] || seen['name:' + String(item.name).toLowerCase()]);
+    }
+    local.forEach(mark);
+    var extra = [];
+    pages.map(pageItem).forEach(function (item) {
+      if (isSeen(item) || (limit !== undefined && extra.length >= limit)) return;
+      mark(item);
+      extra.push(item);
+    });
+    return local.concat(extra);
+  }
+
+  function loadPageBatches(results, local, limit, isCurrent) {
+    var pages = [];
+    function next(start) {
+      if (start >= results.length || !isCurrent()) return Promise.resolve(pages);
+      var batch = results.slice(start, start + limit);
+      return Promise.all(batch.map(function (result) { return result.data(); })).then(function (data) {
+        pages = pages.concat(data);
+        if (mergePages(local, pages, limit).length - local.length >= limit) return pages;
+        return next(start + batch.length);
+      });
+    }
+    return next(0);
   }
 
   function searchPages(query) {
     _pageQuery = query;
     if (!query.trim()) return;
+    function isCurrent() { return _pageQuery === query; }
     loadPagefind().then(function (pagefind) {
-      if (!pagefind || _pageQuery !== query) return null;
+      if (!pagefind || !isCurrent()) return null;
       return pagefind.debouncedSearch(query, {}, 160);
     }).then(function (found) {
-      if (!found || _pageQuery !== query) return null;
-      return Promise.all(found.results.slice(0, PAGE_RESULTS).map(function (result) { return result.data(); }));
-    }).then(function (pages) {
-      if (!pages || !pages.length || _pageQuery !== query || !_isOpen) return;
-      renderResults(mergePages(search(query), pages));
+      if (!found || !isCurrent()) return null;
+      var local = search(query);
+      return loadPageBatches(found.results, local, PAGE_RESULTS, isCurrent).then(function (pages) {
+        return { local: local, pages: pages };
+      });
+    }).then(function (merged) {
+      if (!merged || !merged.pages.length || !isCurrent() || !_isOpen) return;
+      renderResults(mergePages(merged.local, merged.pages, PAGE_RESULTS), true);
     }).catch(function () {});
   }
 
@@ -740,6 +832,7 @@
   }
 
   function _onDialogKeyDown(e) {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -799,6 +892,15 @@
   }
 
   // ── Global keyboard shortcut (Cmd/Ctrl+K) ────────────────────────────
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('keydown', function (e) {
+      if (!_isOpen || e.key !== 'Escape' || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      close();
+    }, true);
+  }
+
   if (typeof document !== 'undefined') {
     document.addEventListener('keydown', function (e) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -864,6 +966,10 @@
       resultIndexForEnter: resultIndexForEnter,
       mergePages: mergePages,
       pageItem: pageItem,
+      lessonPathFromUrl: lessonPathFromUrl,
+      lessonChip: lessonChip,
+      lessonMeta: lessonMeta,
+      loadPageBatches: loadPageBatches,
     };
   }
 

@@ -340,9 +340,20 @@
       margin-bottom: 12px;
     }
 
+    .lesson-article h4 {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--ink);
+      margin-top: 28px;
+      margin-bottom: 10px;
+    }
+
     .lesson-article h1,
     .lesson-article h2,
-    .lesson-article h3 {
+    .lesson-article h3,
+    .lesson-article h4 {
       scroll-margin-top: var(--header-offset, 92px);
     }
 
@@ -2176,6 +2187,7 @@
     .continue-links {
       display: flex;
       flex-direction: column;
+      align-items: flex-start;
       gap: 6px;
     }
 
@@ -2345,6 +2357,11 @@
       font-size: 0.78rem;
     }
 
+    .toc-h4 .toc-link {
+      padding-left: 40px;
+      font-size: 0.74rem;
+    }
+
     .toc-link:hover {
       color: var(--ink);
       background: var(--blueprint-tint);
@@ -2447,6 +2464,11 @@
       .lesson-article h3 {
         margin-top: 28px;
         font-size: 0.84rem;
+        line-height: 1.35;
+      }
+      .lesson-article h4 {
+        margin-top: 22px;
+        font-size: 0.8rem;
         line-height: 1.35;
       }
       .lesson-article p,
@@ -2722,7 +2744,7 @@
     }());
   </script>
   <script src="content-source.js?v=20260821a"></script>
-  <script src="lesson-markdown.js?v=20261103a"></script>
+  <script src="lesson-markdown.js?v=20261104a"></script>
   <script src="progress.js?v=20260822a"></script>
   <script src="highlights-anchor.js?v=20261018a"></script>
   <script src="highlights-store.js?v=20261018a"></script>
@@ -2827,7 +2849,7 @@
       root.AIFSLearningPathProgress = createStore(root.localStorage);
     }(window));
   </script>
-  <script src="header.js?v=20261021a" defer></script>
+  <script src="header.js?v=20261103a" defer></script>
   <script src="code-copy.js?v=20261103a" defer></script>
   <script src="cmdpalette.js?v=20261103a" defer></script>
   <script src="lesson-figures.js?v=843871fd2942"></script>
@@ -3673,24 +3695,52 @@
         });
       }
 
+      var lessonCodeRequests = Object.create(null);
+
+      function fetchLessonCode(path) {
+        if (!/^(?:phases\/[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*|certifications\/[a-z0-9][a-z0-9-]*\/lessons\/[a-z0-9][a-z0-9-]*)$/.test(path || '')) {
+          return Promise.resolve(null);
+        }
+        if (!lessonCodeRequests[path]) {
+          lessonCodeRequests[path] = fetch('lesson-code/' + path + '.json').then(function (response) {
+            if (!response.ok) throw new Error('fetch-failed');
+            return response.json();
+          }).then(function (data) {
+            return data && data.blocks && typeof data.blocks === 'object' ? data.blocks : null;
+          }).catch(function () {
+            delete lessonCodeRequests[path];
+            return null;
+          });
+        }
+        return Promise.race([
+          lessonCodeRequests[path],
+          new Promise(function (resolve) { setTimeout(function () { resolve(null); }, 1500); })
+        ]);
+      }
+
       var lessonFetchSequence = 0;
 
       function fetchLesson(path, retried, requestSequence) {
         if (!retried || !requestSequence) requestSequence = ++lessonFetchSequence;
+        var codePromise = fetchLessonCode(path);
         if (certificationLesson && path === certificationLesson.path && typeof certificationLesson.markdown === 'string') {
           applyRenderedLanguage('en');
           lessonQuizPromise = Promise.resolve(certificationLesson.quiz || null);
-          try {
-            renderLesson(certificationLesson.markdown);
-          } catch (embeddedError) {
-            console.error('renderLesson failed', embeddedError);
-            showError('Render error', 'Loaded the certification lesson but failed to render it. Details are in the browser console.');
-            return;
-          }
-          lessonQuizPromise.then(function (embeddedQuiz) {
-            if (!embeddedQuiz || requestSequence !== lessonFetchSequence) return;
-            try { renderQuiz(embeddedQuiz); }
-            catch (quizError) { console.error('renderQuiz failed', quizError); }
+          var embeddedCertification = certificationLesson;
+          codePromise.then(function (blocks) {
+            if (requestSequence !== lessonFetchSequence) return;
+            try {
+              renderLesson(embeddedCertification.markdown, blocks);
+            } catch (embeddedError) {
+              console.error('renderLesson failed', embeddedError);
+              showError('Render error', 'Loaded the certification lesson but failed to render it. Details are in the browser console.');
+              return;
+            }
+            lessonQuizPromise.then(function (embeddedQuiz) {
+              if (!embeddedQuiz || requestSequence !== lessonFetchSequence) return;
+              try { renderQuiz(embeddedQuiz); }
+              catch (quizError) { console.error('renderQuiz failed', quizError); }
+            });
           });
           return;
         }
@@ -3713,12 +3763,13 @@
           ? Promise.resolve({ markdown: embeddedMarkdown, lang: lang })
           : fetchLessonDocument(lang, enPath, translatedUrl);
 
-        lessonDocument
-          .then(function (documentResult) {
+        Promise.all([lessonDocument, codePromise])
+          .then(function (loaded) {
+            var documentResult = loaded[0];
             if (requestSequence !== lessonFetchSequence) return;
             applyRenderedLanguage(documentResult.lang);
             try {
-              renderLesson(documentResult.markdown);
+              renderLesson(documentResult.markdown, loaded[1]);
             } catch (err) {
               console.error('renderLesson failed', err);
               showError('Render error', 'Loaded the lesson markdown but failed to render it. Details in the browser console.');
@@ -3895,10 +3946,10 @@
         });
       }
 
-      function renderLesson(md) {
+      function renderLesson(md, codeBlocks) {
         var el = document.getElementById('lessonContent');
         disposeRenderedLesson(el);
-        var html = window.AIFSLessonMarkdown.parseMd(md);
+        var html = window.AIFSLessonMarkdown.parseMd(md, { renderCode: window.AIFSLessonMarkdown.prerenderedCode(codeBlocks) });
         html += '<div class="ai-panels" id="aiPanels"></div>';
         html = addBottomNav(html);
         el.innerHTML = certificationDisclaimerHtml() + '<article class="lesson-article">' + html + '</article>';
@@ -4142,7 +4193,7 @@
           return;
         }
 
-        var headings = article.querySelectorAll('h2, h3');
+        var headings = article.querySelectorAll('h2, h3, h4');
         if (!headings.length) {
           sidebar.innerHTML = '';
           sidebar.removeAttribute('aria-hidden');
@@ -5967,9 +6018,7 @@
 
         html += '<div class="continue-links">';
 
-        var phaseSlug = extractPhaseSlug(phase, phaseIdx);
-        var firstLesson = phase.lessons[0] ? extractLessonSlug(phase.lessons[0], 0) : '';
-        html += '<a class="continue-link" href="lesson?path=phases/' + phaseSlug + '/' + firstLesson + '">Browse all Phase ' + String(phase.id).padStart(2, '0') + ' lessons</a>';
+        html += '<a class="continue-link" href="catalog.html?phase=' + encodeURIComponent(phase.id) + '">Browse all Phase ' + String(phase.id).padStart(2, '0') + ' lessons</a>';
         html += '<a class="continue-link" href="catalog.html">Full course catalog</a>';
         html += '</div>';
 

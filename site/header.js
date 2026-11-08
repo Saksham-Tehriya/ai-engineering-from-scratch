@@ -242,6 +242,8 @@
       target = 'projects.html';
     } else if (current === 'certification.html' || current === 'assessment.html') {
       target = 'certifications.html';
+    } else if (/^\/interviews(?:\/|$)/.test(location.pathname)) {
+      target = 'interviews.html';
     } else if (/^manual-[a-z0-9-]+\.html$/.test(current)) {
       target = 'manuals.html';
     } else if (current === 'lesson.html') {
@@ -284,6 +286,7 @@
     ensureNavigationLink(nav, 'manuals.html', 'Manuals', '');
     ensureNavigationLink(nav, '/cheatsheets', 'Cheat Sheets', '');
     ensureNavigationLink(nav, '/practice', 'Practice', '');
+    ensureNavigationLink(nav, '/interviews', 'Interviews', '');
     ensureNavigationLink(nav, 'skills.html', 'Skills', '');
     ensureNavigationLink(nav, 'highlights.html', 'My Highlights', '');
     ensureNavigationLink(nav, '/blogs', 'Blogs & Guides', '');
@@ -396,6 +399,7 @@
     }
 
     function syncLayout() {
+      if (window.AIFSThemeMenu && typeof window.AIFSThemeMenu.close === 'function') window.AIFSThemeMenu.close();
       var isNarrow = narrow ? narrow.matches : false;
       var menuHadFocus = nav.contains(document.activeElement);
       var priorityHadFocus = priorityNav.contains(document.activeElement);
@@ -420,10 +424,13 @@
       if (open && !header.contains(event.target)) setOpen(false, false);
     });
     document.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape' && open && !event.defaultPrevented) {
+      if (event.key === 'Escape' && open && !event.defaultPrevented && !document.querySelector('.lang-panel:not([hidden]), #aifsThemeMenu:not([hidden])')) {
         event.preventDefault();
         setOpen(false, true);
       }
+    });
+    document.addEventListener('aifs:overlayopen', function (event) {
+      if (open && event.detail && event.detail.source === 'palette') setOpen(false, false);
     });
 
     if (narrow) {
@@ -537,6 +544,7 @@
       ensureNavigationLink(footers[j], '/blogs', 'Blogs & Guides', '');
       ensureNavigationLink(footers[j], 'skills.html', 'Skills', '');
       ensureNavigationLink(footers[j], '/practice', 'Practice', '');
+      ensureNavigationLink(footers[j], '/interviews', 'Interviews', '');
       ensureNavigationLink(footers[j], 'highlights.html', 'My Highlights', '');
     }
     loadStars();

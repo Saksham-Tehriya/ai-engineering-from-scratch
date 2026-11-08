@@ -37,6 +37,15 @@
     var inLabChallenge = false;
     var inMathBlock = false;
     var mathLines = [];
+    var usedHeadingIds = Object.create(null);
+
+    function uniqueHeadingId(base) {
+      if (!usedHeadingIds[base]) { usedHeadingIds[base] = 1; return base; }
+      var n = 2;
+      while (usedHeadingIds[base + '-' + n]) n++;
+      usedHeadingIds[base + '-' + n] = 1;
+      return base + '-' + n;
+    }
 
     function flushLabChallenge() {
       if (!inLabChallenge) return '';
@@ -198,7 +207,7 @@
       if (h1) {
         out += flushList();
         out += flushLabChallenge();
-        var slug = slugify(h1[1]);
+        var slug = uniqueHeadingId(slugify(h1[1]));
         out += '<h1 id="' + slug + '">' + inlineFormat(h1[1]) + '</h1>';
         continue;
       }
@@ -237,11 +246,11 @@
           out += flushLabChallenge();
           inLabChallenge = true;
           out += '<div class="lab-challenge">';
-          out += '<h2 id="' + slug2 + '">&#128171; Lab Challenge</h2>';
+          out += '<h2 id="' + uniqueHeadingId(slug2) + '">&#128171; Lab Challenge</h2>';
           continue;
         }
         out += flushLabChallenge();
-        out += '<h2 id="' + slug2 + '" class="' + sectionClass + '">' + inlineFormat(h2[1]) + '</h2>';
+        out += '<h2 id="' + uniqueHeadingId(slug2) + '" class="' + sectionClass + '">' + inlineFormat(h2[1]) + '</h2>';
         continue;
       }
 
@@ -249,7 +258,15 @@
       if (h3) {
         out += flushList();
         var slug3 = slugify(h3[1]);
-        out += '<h3 id="' + slug3 + '">' + inlineFormat(h3[1]) + '</h3>';
+        out += '<h3 id="' + uniqueHeadingId(slug3) + '">' + inlineFormat(h3[1]) + '</h3>';
+        continue;
+      }
+
+      var h4 = line.match(/^#### (.+)/);
+      if (h4) {
+        out += flushList();
+        var slug4 = slugify(h4[1]);
+        out += '<h4 id="' + uniqueHeadingId(slug4) + '">' + inlineFormat(h4[1]) + '</h4>';
         continue;
       }
 
@@ -660,6 +677,30 @@
     return renderCodeWith(regexHighlighter, code, lang, options);
   }
 
+  function codeKey(code, lang) {
+    var text = String(lang || '').toLowerCase() + '\n' + String(code == null ? '' : code);
+    var h1 = 0xdeadbeef;
+    var h2 = 0x41c6ce57;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36) + '-' + text.length.toString(36);
+  }
+
+  function prerenderedCode(blocks) {
+    if (!blocks || typeof blocks !== 'object') return renderCodeBlock;
+    return function (code, lang) {
+      var key = codeKey(code, lang);
+      return Object.prototype.hasOwnProperty.call(blocks, key) && typeof blocks[key] === 'string'
+        ? blocks[key]
+        : renderCodeBlock(code, lang);
+    };
+  }
+
   function highlightSyntax(code, lang) {
     var keywords, commentPattern;
 
@@ -785,6 +826,8 @@
     codeBlockHtml: codeBlockHtml,
     renderCodeWith: renderCodeWith,
     renderCodeBlock: renderCodeBlock,
+    codeKey: codeKey,
+    prerenderedCode: prerenderedCode,
     escapeHtml: escapeHtml
   };
 }));

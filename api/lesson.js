@@ -1,10 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const { parseMd } = require('../site/lesson-markdown');
-const { representation } = require('../lib/agent-http');
+const { parseMd, prerenderedCode } = require('../site/lesson-markdown');
+const { representation, quality, problem } = require('../lib/agent-http');
 const { lessonDocumentSeo, seoTitleFor } = require('../lib/lesson-document');
 const { cardTags, cardUrl, lessonCard } = require('../lib/og-cards');
-const { readTranslation: readTranslationFromSource, TRANSLATION_LANGUAGES, isIndexedLanguage, translationsOf, lessonUrl, NATIVE_NAMES, RTL_LANGUAGES, OG_LOCALES } = require('../lib/lesson-translations');
+const { readTranslationResult: readTranslationFromSource, TRANSLATION_LANGUAGES, isIndexedLanguage, translationsOf, lessonUrl, NATIVE_NAMES, RTL_LANGUAGES, OG_LOCALES } = require('../lib/lesson-translations');
 const { phaseHubPath, phaseLabel } = require('../lib/hub-routes');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -48,6 +48,9 @@ function loadProductionAssets() {
       practice,
       readMarkdown: function (lessonPath) {
         return fs.readFileSync(path.join(REPO_ROOT, lessonPath, 'docs', 'en.md'), 'utf8');
+      },
+      readCode: function (lessonPath) {
+        return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'site', 'lesson-code', `${lessonPath}.json`), 'utf8')).blocks;
       },
       languageCodes: ['en'].concat(TRANSLATION_LANGUAGES),
     };
@@ -298,9 +301,19 @@ function readEnglishMarkdown(assets, lessonPath) {
   }
 }
 
-function renderBody(markdown, heading) {
+function readLessonCode(assets, lessonPath) {
+  if (typeof assets.readCode !== 'function') return null;
+  try {
+    const blocks = assets.readCode(lessonPath);
+    return blocks && typeof blocks === 'object' ? blocks : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function renderBody(markdown, heading, blocks) {
   if (!markdown) return null;
-  return { markdown, html: `<h1>${escapeHtml(heading)}</h1>` + parseMd(markdown).replace(/<h1 id="[^"]*">[\s\S]*?<\/h1>/, '') };
+  return { markdown, html: `<h1>${escapeHtml(heading)}</h1>` + parseMd(markdown, { renderCode: prerenderedCode(blocks) }).replace(/<h1 id="[^"]*">[\s\S]*?<\/h1>/, '') };
 }
 
 function languageLinks(page, lessonPath, contextParams) {
@@ -452,7 +465,7 @@ function normalizedLessonLocation(req, lessonPath, entry, assets) {
 
   if (hasQuery(req, 'lang')) {
     const lang = queryValue(req, 'lang');
-    if (!certificationLesson && validLanguageCode(lang) && listedValue(assets.languageCodes, lang)) {
+    if (!certificationLesson && lang !== 'en' && validLanguageCode(lang) && listedValue(assets.languageCodes, lang)) {
       params.set('lang', lang);
     } else {
       needsRedirect = true;
@@ -539,19 +552,27 @@ function createHandler(options) {
       }
       const heading = lessonHeading(entry, manifest);
       const english = readEnglishMarkdown(assets, lessonPath);
-      const markdownRequested = representation(req.headers && req.headers.accept) === 'text/markdown';
+      const accept = req.headers && req.headers.accept;
+      const markdownRequested = representation(accept) === 'text/markdown';
       const respond = function (markdown, servedLang, cacheControl) {
-        res.setHeader('Vary', 'Accept, Accept-Encoding');
-        res.setHeader('Content-Language', servedLang);
         if (markdownRequested && markdown) {
+          res.setHeader('Vary', 'Accept, Accept-Encoding');
+          res.setHeader('Content-Language', servedLang);
           send(res, method, 200, markdown, cacheControl, 'text/markdown');
           return;
         }
+        if (markdownRequested && !quality(accept, 'text/html')) {
+          res.setHeader('Vary', 'Accept, Accept-Encoding');
+          problem({ method }, res, 406, 'representation_not_supported', 'This lesson has no Markdown source. Request text/html.');
+          return;
+        }
         const page = pageInfo(entry, lessonPath, heading, servedLang, markdown);
-        const body = renderBody(markdown, page.heading);
+        const body = renderBody(markdown, page.heading, readLessonCode(assets, lessonPath));
         let html = replaceMarkedRegion(localizedTemplate(template, servedLang), SEO_START, SEO_END, lessonHead(entry, page));
         html = replaceMarkedRegion(html, FALLBACK_START, FALLBACK_END, lessonFallback(entry, lessonPath, contextParams, page, body));
         html = replaceMarkedRegion(html, HUBS_START, HUBS_END, lessonHubLinks(entry, page, assets.lessonTerms, assets.cheatsheets, assets.practice));
+        res.setHeader('Vary', 'Accept, Accept-Encoding');
+        res.setHeader('Content-Language', servedLang);
         send(res, method, 200, html, cacheControl);
       };
       const lang = contextParams.lang;
@@ -562,8 +583,9 @@ function createHandler(options) {
       return Promise.resolve()
         .then(function () { return readTranslation(lang, lessonPath); })
         .catch(function () { return null; })
-        .then(function (markdown) {
-          if (typeof markdown === 'string' && markdown.trim() && markdown !== english) respond(markdown, lang, TRANSLATED_CACHE);
+        .then(function (result) {
+          const markdown = result && typeof result === 'object' ? result.markdown : result;
+          if (typeof markdown === 'string' && markdown.trim() && markdown !== english) respond(markdown, lang, result.stale ? RETRY_CACHE : TRANSLATED_CACHE);
           else respond(english, 'en', RETRY_CACHE);
         })
         .catch(function () { sendUnavailable(res, method); });
