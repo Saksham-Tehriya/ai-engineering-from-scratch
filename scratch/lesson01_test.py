@@ -2,6 +2,6 @@ import sys
 print(f"Python {sys.version}")
 
 import numpy as np
-print(f"NumPy {np.__version__}")
-a = np.array([1, 2, 3])
-print(f"Vector: {a}, dot product with itself: {np.dot(a, a)}")
+print(f"NumP {np.__version__}")
+b = np.array([1, 2, 3])
+print(f"Vector: {b}, dot product with itself: {np.dot(b, b)}")
