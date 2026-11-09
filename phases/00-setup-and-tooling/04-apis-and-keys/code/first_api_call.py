@@ -1,55 +1,24 @@
 import os
-import json
-import urllib.request
+from dotenv import load_dotenv
+from groq import Groq
 
-MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
+# Load the hidden .env file
+load_dotenv() 
 
+# Pull the Groq key from memory
+api_key = os.environ.get("GROQ_API_KEY")
 
-def call_with_sdk():
-    try:
-        import anthropic
-    except ImportError:
-        print("Install the SDK: pip install anthropic")
-        return
+if not api_key:
+    print("Error: Could not find GROQ_API_KEY in the .env file.")
+else:
+    # Connect to the free AI
+    client = Groq(api_key=api_key)
 
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=256,
-        messages=[{"role": "user", "content": "What is a neural network in one sentence?"}]
+    # Send the prompt
+    response = client.chat.completions.create(
+        messages=[{"role": "user", "content": "What is a neural network in one sentence?"}],
+        model="openai/gpt-oss-120b", 
     )
-    print(f"SDK response: {response.content[0].text}")
-    print(f"Tokens used: {response.usage.input_tokens} in, {response.usage.output_tokens} out")
 
-
-def call_raw_http():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("Set ANTHROPIC_API_KEY environment variable first")
-        return
-
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    body = json.dumps({
-        "model": MODEL,
-        "max_tokens": 256,
-        "messages": [{"role": "user", "content": "What is a neural network in one sentence?"}],
-    }).encode()
-
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
-        print(f"Raw HTTP response: {result['content'][0]['text']}")
-        print(f"Tokens used: {result['usage']['input_tokens']} in, {result['usage']['output_tokens']} out")
-
-
-if __name__ == "__main__":
-    print("=== API Calls ===\n")
-    print("1. Using the SDK:")
-    call_with_sdk()
-    print("\n2. Using raw HTTP:")
-    call_raw_http()
+    # Print the answer
+    print(f"AI Response: {response.choices[0].message.content}")
